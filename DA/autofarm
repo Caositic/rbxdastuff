@@ -177,7 +177,7 @@ end
 -- Create GUI
 local playerGui = player:WaitForChild("PlayerGui")
 gui = Instance.new("ScreenGui")
-gui.Name = "BeneathTeleportGUI"
+gui.Name = "AutofarmGUI"
 gui.Parent = playerGui
 
 -- Main frame
