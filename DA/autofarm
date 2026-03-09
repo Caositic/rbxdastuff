@@ -28,17 +28,18 @@ local hideKey = DEFAULT_HIDE_KEY
 local beneathDistance = DEFAULT_DISTANCE
 
 -- GUI variables
-local gui, mainFrame, toggleBtn, entityLabel, toggleKeyBtn, hideKeyBtn, distanceSlider, distanceBox, blacklistContainer, addBox, addBtn
+local gui, mainFrame, smallIcon, titleBar, toggleBtn, entityLabel, toggleKeyBtn, hideKeyBtn, distanceSlider, distanceBox, blacklistContainer, addBox, addBtn
 local awaitingKey = false
-local awaitingFor = nil
+local awaitingFor = nil 
 
--- Helper functions
+local dragActive = false
+local dragStart, startPos
+local dragThreshold = 5
+local dragDistance = 0
+
 local function getEntityPrimaryPart(entity)
-    if entity.PrimaryPart then
-        return entity.PrimaryPart
-    end
-    local primary = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity:FindFirstChild("UpperTorso")
-    return primary
+    if entity.PrimaryPart then return entity.PrimaryPart end
+    return entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity:FindFirstChild("UpperTorso")
 end
 
 local function isEntityAlive(entity)
@@ -47,7 +48,7 @@ local function isEntityAlive(entity)
 end
 
 local function isBlacklisted(entity)
-     return blacklist[entity] or blacklist[entity.Name] or false
+    return blacklist[entity] or blacklist[entity.Name] or false
 end
 
 local function findNextEntity()
@@ -64,37 +65,24 @@ local function switchToEntity(newEntity)
         currentEntity = nil
         return
     end
-
     if diedConnection then
         diedConnection:Disconnect()
         diedConnection = nil
     end
-
     currentEntity = newEntity
-
     local humanoid = currentEntity:FindFirstChildOfClass("Humanoid")
     if humanoid then
         diedConnection = humanoid.Died:Connect(function()
             local nextEntity = findNextEntity()
-            if nextEntity then
-                switchToEntity(nextEntity)
-            else
-                currentEntity = nil
-            end
+            if nextEntity then switchToEntity(nextEntity) else currentEntity = nil end
         end)
     end
 end
 
 local function updatePosition()
-    if not enabled or not currentEntity then
-        return
-    end
-
+    if not enabled or not currentEntity then return end
     local primaryPart = getEntityPrimaryPart(currentEntity)
-    if not primaryPart then
-        return
-    end
-
+    if not primaryPart then return end
     local targetPos = primaryPart.Position + Vector3.new(0, -beneathDistance, 0)
     humanoidRootPart.CFrame = CFrame.new(targetPos) * (humanoidRootPart.CFrame - humanoidRootPart.Position)
 end
@@ -116,19 +104,13 @@ end
 local function rebuildBlacklistDisplay()
     if not blacklistContainer then return end
     for _, child in pairs(blacklistContainer:GetChildren()) do
-        if child:IsA("Frame") then
-            child:Destroy()
-        end
+        if child:IsA("Frame") then child:Destroy() end
     end
-
     local sorted = {}
     for name, _ in pairs(blacklist) do
-        if type(name) == "string" then
-            table.insert(sorted, name)
-        end
+        if type(name) == "string" then table.insert(sorted, name) end
     end
     table.sort(sorted)
-
     for _, name in ipairs(sorted) do
         local itemFrame = Instance.new("Frame")
         itemFrame.Size = UDim2.new(1, 0, 0, 24)
@@ -166,14 +148,9 @@ end
 local function toggle()
     enabled = not enabled
     updateToggleButton()
-
     if enabled then
         local firstEntity = findNextEntity()
-        if firstEntity then
-            switchToEntity(firstEntity)
-        else
-            currentEntity = nil
-        end
+        if firstEntity then switchToEntity(firstEntity) else currentEntity = nil end
     else
         if diedConnection then
             diedConnection:Disconnect()
@@ -184,43 +161,26 @@ local function toggle()
     updateCurrentEntityLabel()
 end
 
--- Input handling
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-
-    -- Key changing mode
-    if awaitingKey then
-        if input.UserInputType == Enum.UserInputType.Keyboard then
-            local key = input.KeyCode
-            if key ~= Enum.KeyCode.Unknown then
-                if awaitingFor == "toggle" then
-                    toggleKey = key
-                    toggleKeyBtn.Text = "Toggle Key: " .. key.Name
-                elseif awaitingFor == "hide" then
-                    hideKey = key
-                    hideKeyBtn.Text = "Hide Key: " .. key.Name
-                end
-                awaitingKey = false
-                awaitingFor = nil
-            end
-        end
-        return
+local function setMainVisible(visible)
+    mainFrame.Visible = visible
+    smallIcon.Visible = not visible
+    if visible then
+        dragActive = false
     end
+end
 
-    -- Normal hotkeys
-    if input.KeyCode == toggleKey then
-        toggle()
-    elseif input.KeyCode == hideKey and gui then
-        mainFrame.Visible = not mainFrame.Visible
-    end
-end)
+-- Small icon click handler
+local function onSmallIconClick()
+    setMainVisible(true)
+end
 
 -- Create GUI
 local playerGui = player:WaitForChild("PlayerGui")
 gui = Instance.new("ScreenGui")
-gui.Name = "AutofarmGUI"
+gui.Name = "BeneathTeleportGUI"
 gui.Parent = playerGui
 
+-- Main frame
 mainFrame = Instance.new("Frame")
 mainFrame.Size = UDim2.new(0, 300, 0, 400)
 mainFrame.Position = UDim2.new(0.5, -150, 0.5, -200)
@@ -231,14 +191,14 @@ mainFrame.Draggable = true
 mainFrame.Parent = gui
 
 -- Title bar
-local titleBar = Instance.new("Frame")
+titleBar = Instance.new("Frame")
 titleBar.Size = UDim2.new(1, 0, 0, 30)
 titleBar.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
 titleBar.BorderSizePixel = 0
 titleBar.Parent = mainFrame
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -30, 1, 0)
+title.Size = UDim2.new(1, -60, 1, 0)
 title.Position = UDim2.new(0, 0, 0, 0)
 title.BackgroundTransparency = 1
 title.Text = "Autofarm"
@@ -248,15 +208,30 @@ title.TextSize = 16
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = titleBar
 
+-- Hide hint (small H)
 local hideHint = Instance.new("TextLabel")
 hideHint.Size = UDim2.new(0, 30, 1, 0)
-hideHint.Position = UDim2.new(1, -30, 0, 0)
+hideHint.Position = UDim2.new(1, -60, 0, 0)
 hideHint.BackgroundTransparency = 1
 hideHint.Text = "H"
 hideHint.TextColor3 = Color3.new(0.7, 0.7, 0.7)
 hideHint.Font = Enum.Font.Gotham
 hideHint.TextSize = 14
 hideHint.Parent = titleBar
+
+-- Close button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 30, 1, 0)
+closeBtn.Position = UDim2.new(1, -30, 0, 0)
+closeBtn.BackgroundColor3 = Color3.new(0.8, 0.2, 0.2)
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.new(1, 1, 1)
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 16
+closeBtn.Parent = titleBar
+closeBtn.MouseButton1Click:Connect(function()
+    setMainVisible(false)
+end)
 
 -- Content
 local content = Instance.new("Frame")
@@ -339,7 +314,6 @@ distLabel.TextSize = 14
 distLabel.TextXAlignment = Enum.TextXAlignment.Left
 distLabel.Parent = distanceFrame
 
-distanceSlider = Instance.new("TextBox")
 local distBoxFrame = Instance.new("Frame")
 distBoxFrame.Size = UDim2.new(0.7, 0, 1, 0)
 distBoxFrame.Position = UDim2.new(0.3, 0, 0, 0)
@@ -385,20 +359,10 @@ end
 
 distanceBox.FocusLost:Connect(function()
     local val = tonumber(distanceBox.Text)
-    if val then
-        updateDistance(val)
-    else
-        distanceBox.Text = tostring(beneathDistance)
-    end
+    if val then updateDistance(val) else distanceBox.Text = tostring(beneathDistance) end
 end)
-
-minusBtn.MouseButton1Click:Connect(function()
-    updateDistance(beneathDistance - 1)
-end)
-
-plusBtn.MouseButton1Click:Connect(function()
-    updateDistance(beneathDistance + 1)
-end)
+minusBtn.MouseButton1Click:Connect(function() updateDistance(beneathDistance - 1) end)
+plusBtn.MouseButton1Click:Connect(function() updateDistance(beneathDistance + 1) end)
 
 -- Exceptions list
 local exceptionLabel = Instance.new("TextLabel")
@@ -463,6 +427,73 @@ end)
 
 rebuildBlacklistDisplay()
 
+smallIcon = Instance.new("TextButton")
+smallIcon.Size = UDim2.new(0, 50, 0, 50)
+smallIcon.Position = UDim2.new(0, 10, 0, 10)
+smallIcon.BackgroundColor3 = Color3.new(0.2, 0.2, 0.2)
+smallIcon.Text = "Auto"
+smallIcon.TextColor3 = Color3.new(1, 1, 1)
+smallIcon.Font = Enum.Font.GothamBold
+smallIcon.TextSize = 24
+smallIcon.Visible = false
+smallIcon.Parent = gui
+
+smallIcon.MouseButton1Down:Connect(function()
+    dragActive = true
+    dragStart = UserInputService:GetMouseLocation()
+    startPos = smallIcon.Position
+    dragDistance = 0
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragActive and input.UserInputType == Enum.UserInputType.MouseMovement then
+        local mousePos = UserInputService:GetMouseLocation()
+        local delta = mousePos - dragStart
+        dragDistance = dragDistance + delta.Magnitude
+        if dragDistance > dragThreshold then
+            smallIcon.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 and dragActive then
+        if dragDistance <= dragThreshold then
+            onSmallIconClick()
+        end
+        dragActive = false
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    if awaitingKey then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            local key = input.KeyCode
+            if key ~= Enum.KeyCode.Unknown then
+                if awaitingFor == "toggle" then
+                    toggleKey = key
+                    toggleKeyBtn.Text = "Toggle Key: " .. key.Name
+                elseif awaitingFor == "hide" then
+                    hideKey = key
+                    hideKeyBtn.Text = "Hide Key: " .. key.Name
+                    hideHint.Text = key.Name:sub(1,1)
+                end
+                awaitingKey = false
+                awaitingFor = nil
+            end
+        end
+        return
+    end
+
+    if input.KeyCode == toggleKey then
+        toggle()
+    elseif input.KeyCode == hideKey then
+        setMainVisible(not mainFrame.Visible)
+    end
+end)
+
 RunService.Heartbeat:Connect(function()
     updatePosition()
     updateCurrentEntityLabel()
@@ -472,7 +503,6 @@ player.CharacterAdded:Connect(function(newCharacter)
     character = newCharacter
     humanoidRootPart = character:WaitForChild("HumanoidRootPart")
     if enabled then
-        toggle()  
         enabled = false
         updateToggleButton()
         currentEntity = nil
@@ -486,6 +516,7 @@ ENTITY_FOLDER.ChildAdded:Connect(function(newEntity)
     end
 end)
 
+-- Global function
 _G.addEntityException = function(thing)
     if typeof(thing) == "Instance" then
         blacklist[thing] = true
@@ -498,3 +529,4 @@ _G.addEntityException = function(thing)
 end
 
 updateCurrentEntityLabel()
+hideHint.Text = hideKey.Name:sub(1,1)
