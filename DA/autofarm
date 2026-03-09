@@ -1,0 +1,500 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+
+local ENTITY_FOLDER = Workspace:WaitForChild("MobFolder")  
+local DEFAULT_DISTANCE = 15
+local DEFAULT_TOGGLE_KEY = Enum.KeyCode.T
+local DEFAULT_HIDE_KEY = Enum.KeyCode.H
+
+-- Blacklist
+local blacklist = {
+    ["DPS Dummy R15"] = true,
+    ["DPS Dummy R6"] = true
+}
+
+-- State variables
+local enabled = false
+local currentEntity = nil
+local diedConnection = nil
+local toggleKey = DEFAULT_TOGGLE_KEY
+local hideKey = DEFAULT_HIDE_KEY
+local beneathDistance = DEFAULT_DISTANCE
+
+-- GUI variables
+local gui, mainFrame, toggleBtn, entityLabel, toggleKeyBtn, hideKeyBtn, distanceSlider, distanceBox, blacklistContainer, addBox, addBtn
+local awaitingKey = false
+local awaitingFor = nil
+
+-- Helper functions
+local function getEntityPrimaryPart(entity)
+    if entity.PrimaryPart then
+        return entity.PrimaryPart
+    end
+    local primary = entity:FindFirstChild("HumanoidRootPart") or entity:FindFirstChild("Torso") or entity:FindFirstChild("UpperTorso")
+    return primary
+end
+
+local function isEntityAlive(entity)
+    local humanoid = entity:FindFirstChildOfClass("Humanoid")
+    return humanoid and humanoid.Health > 0
+end
+
+local function isBlacklisted(entity)
+     return blacklist[entity] or blacklist[entity.Name] or false
+end
+
+local function findNextEntity()
+    for _, entity in ipairs(ENTITY_FOLDER:GetChildren()) do
+        if isEntityAlive(entity) and not isBlacklisted(entity) then
+            return entity
+        end
+    end
+    return nil
+end
+
+local function switchToEntity(newEntity)
+    if not newEntity then
+        currentEntity = nil
+        return
+    end
+
+    if diedConnection then
+        diedConnection:Disconnect()
+        diedConnection = nil
+    end
+
+    currentEntity = newEntity
+
+    local humanoid = currentEntity:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        diedConnection = humanoid.Died:Connect(function()
+            local nextEntity = findNextEntity()
+            if nextEntity then
+                switchToEntity(nextEntity)
+            else
+                currentEntity = nil
+            end
+        end)
+    end
+end
+
+local function updatePosition()
+    if not enabled or not currentEntity then
+        return
+    end
+
+    local primaryPart = getEntityPrimaryPart(currentEntity)
+    if not primaryPart then
+        return
+    end
+
+    local targetPos = primaryPart.Position + Vector3.new(0, -beneathDistance, 0)
+    humanoidRootPart.CFrame = CFrame.new(targetPos) * (humanoidRootPart.CFrame - humanoidRootPart.Position)
+end
+
+-- GUI update functions
+local function updateCurrentEntityLabel()
+    if entityLabel then
+        entityLabel.Text = "Current: " .. (currentEntity and currentEntity.Name or "none")
+    end
+end
+
+local function updateToggleButton()
+    if toggleBtn then
+        toggleBtn.Text = enabled and "Disable" or "Enable"
+        toggleBtn.BackgroundColor3 = enabled and Color3.new(1, 0.3, 0.3) or Color3.new(0.3, 1, 0.3)
+    end
+end
+
+local function rebuildBlacklistDisplay()
+    if not blacklistContainer then return end
+    for _, child in pairs(blacklistContainer:GetChildren()) do
+        if child:IsA("Frame") then
+            child:Destroy()
+        end
+    end
+
+    local sorted = {}
+    for name, _ in pairs(blacklist) do
+        if type(name) == "string" then
+            table.insert(sorted, name)
+        end
+    end
+    table.sort(sorted)
+
+    for _, name in ipairs(sorted) do
+        local itemFrame = Instance.new("Frame")
+        itemFrame.Size = UDim2.new(1, 0, 0, 24)
+        itemFrame.BackgroundTransparency = 1
+        itemFrame.Parent = blacklistContainer
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Size = UDim2.new(0.8, 0, 1, 0)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = name
+        nameLabel.TextColor3 = Color3.new(1, 1, 1)
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.Font = Enum.Font.Gotham
+        nameLabel.TextSize = 14
+        nameLabel.Parent = itemFrame
+
+        local removeBtn = Instance.new("TextButton")
+        removeBtn.Size = UDim2.new(0.2, 0, 1, 0)
+        removeBtn.Position = UDim2.new(0.8, 0, 0, 0)
+        removeBtn.Text = "X"
+        removeBtn.TextColor3 = Color3.new(1, 1, 1)
+        removeBtn.BackgroundColor3 = Color3.new(0.8, 0.2, 0.2)
+        removeBtn.Font = Enum.Font.GothamBold
+        removeBtn.TextSize = 14
+        removeBtn.Parent = itemFrame
+
+        removeBtn.MouseButton1Click:Connect(function()
+            blacklist[name] = nil
+            rebuildBlacklistDisplay()
+        end)
+    end
+end
+
+-- Toggle function
+local function toggle()
+    enabled = not enabled
+    updateToggleButton()
+
+    if enabled then
+        local firstEntity = findNextEntity()
+        if firstEntity then
+            switchToEntity(firstEntity)
+        else
+            currentEntity = nil
+        end
+    else
+        if diedConnection then
+            diedConnection:Disconnect()
+            diedConnection = nil
+        end
+        currentEntity = nil
+    end
+    updateCurrentEntityLabel()
+end
+
+-- Input handling
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+
+    -- Key changing mode
+    if awaitingKey then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            local key = input.KeyCode
+            if key ~= Enum.KeyCode.Unknown then
+                if awaitingFor == "toggle" then
+                    toggleKey = key
+                    toggleKeyBtn.Text = "Toggle Key: " .. key.Name
+                elseif awaitingFor == "hide" then
+                    hideKey = key
+                    hideKeyBtn.Text = "Hide Key: " .. key.Name
+                end
+                awaitingKey = false
+                awaitingFor = nil
+            end
+        end
+        return
+    end
+
+    -- Normal hotkeys
+    if input.KeyCode == toggleKey then
+        toggle()
+    elseif input.KeyCode == hideKey and gui then
+        mainFrame.Visible = not mainFrame.Visible
+    end
+end)
+
+-- Create GUI
+local playerGui = player:WaitForChild("PlayerGui")
+gui = Instance.new("ScreenGui")
+gui.Name = "BeneathTeleportGUI"
+gui.Parent = playerGui
+
+mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 300, 0, 400)
+mainFrame.Position = UDim2.new(0.5, -150, 0.5, -200)
+mainFrame.BackgroundColor3 = Color3.new(0.2, 0.2, 0.2)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = gui
+
+-- Title bar
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 30)
+titleBar.BackgroundColor3 = Color3.new(0.1, 0.1, 0.1)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = mainFrame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -30, 1, 0)
+title.Position = UDim2.new(0, 0, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "Beneath Teleport"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = titleBar
+
+local hideHint = Instance.new("TextLabel")
+hideHint.Size = UDim2.new(0, 30, 1, 0)
+hideHint.Position = UDim2.new(1, -30, 0, 0)
+hideHint.BackgroundTransparency = 1
+hideHint.Text = "H"
+hideHint.TextColor3 = Color3.new(0.7, 0.7, 0.7)
+hideHint.Font = Enum.Font.Gotham
+hideHint.TextSize = 14
+hideHint.Parent = titleBar
+
+-- Content
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, 0, 1, -30)
+content.Position = UDim2.new(0, 0, 0, 30)
+content.BackgroundTransparency = 1
+content.Parent = mainFrame
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 5)
+layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+layout.VerticalAlignment = Enum.VerticalAlignment.Top
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = content
+
+-- Toggle button
+toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0.9, 0, 0, 30)
+toggleBtn.BackgroundColor3 = Color3.new(0.3, 1, 0.3)
+toggleBtn.Text = "Enable"
+toggleBtn.TextColor3 = Color3.new(1, 1, 1)
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 16
+toggleBtn.Parent = content
+toggleBtn.MouseButton1Click:Connect(toggle)
+
+-- Current entity
+entityLabel = Instance.new("TextLabel")
+entityLabel.Size = UDim2.new(0.9, 0, 0, 20)
+entityLabel.BackgroundTransparency = 1
+entityLabel.Text = "Current: none"
+entityLabel.TextColor3 = Color3.new(1, 1, 1)
+entityLabel.Font = Enum.Font.Gotham
+entityLabel.TextSize = 14
+entityLabel.Parent = content
+
+-- Toggle key button
+toggleKeyBtn = Instance.new("TextButton")
+toggleKeyBtn.Size = UDim2.new(0.9, 0, 0, 30)
+toggleKeyBtn.BackgroundColor3 = Color3.new(0.3, 0.3, 0.3)
+toggleKeyBtn.Text = "Toggle Key: " .. toggleKey.Name
+toggleKeyBtn.TextColor3 = Color3.new(1, 1, 1)
+toggleKeyBtn.Font = Enum.Font.Gotham
+toggleKeyBtn.TextSize = 14
+toggleKeyBtn.Parent = content
+toggleKeyBtn.MouseButton1Click:Connect(function()
+    awaitingKey = true
+    awaitingFor = "toggle"
+    toggleKeyBtn.Text = "Press any key..."
+end)
+
+-- Hide key button
+hideKeyBtn = Instance.new("TextButton")
+hideKeyBtn.Size = UDim2.new(0.9, 0, 0, 30)
+hideKeyBtn.BackgroundColor3 = Color3.new(0.3, 0.3, 0.3)
+hideKeyBtn.Text = "Hide Key: " .. hideKey.Name
+hideKeyBtn.TextColor3 = Color3.new(1, 1, 1)
+hideKeyBtn.Font = Enum.Font.Gotham
+hideKeyBtn.TextSize = 14
+hideKeyBtn.Parent = content
+hideKeyBtn.MouseButton1Click:Connect(function()
+    awaitingKey = true
+    awaitingFor = "hide"
+    hideKeyBtn.Text = "Press any key..."
+end)
+
+-- Distance control
+local distanceFrame = Instance.new("Frame")
+distanceFrame.Size = UDim2.new(0.9, 0, 0, 40)
+distanceFrame.BackgroundTransparency = 1
+distanceFrame.Parent = content
+
+local distLabel = Instance.new("TextLabel")
+distLabel.Size = UDim2.new(0.3, 0, 1, 0)
+distLabel.BackgroundTransparency = 1
+distLabel.Text = "Distance:"
+distLabel.TextColor3 = Color3.new(1, 1, 1)
+distLabel.Font = Enum.Font.Gotham
+distLabel.TextSize = 14
+distLabel.TextXAlignment = Enum.TextXAlignment.Left
+distLabel.Parent = distanceFrame
+
+distanceSlider = Instance.new("TextBox")
+local distBoxFrame = Instance.new("Frame")
+distBoxFrame.Size = UDim2.new(0.7, 0, 1, 0)
+distBoxFrame.Position = UDim2.new(0.3, 0, 0, 0)
+distBoxFrame.BackgroundTransparency = 1
+distBoxFrame.Parent = distanceFrame
+
+distanceBox = Instance.new("TextBox")
+distanceBox.Size = UDim2.new(0.6, -5, 0.8, 0)
+distanceBox.Position = UDim2.new(0, 0, 0.1, 0)
+distanceBox.BackgroundColor3 = Color3.new(0.15, 0.15, 0.15)
+distanceBox.Text = tostring(beneathDistance)
+distanceBox.TextColor3 = Color3.new(1, 1, 1)
+distanceBox.Font = Enum.Font.Gotham
+distanceBox.TextSize = 14
+distanceBox.ClearTextOnFocus = false
+distanceBox.Parent = distBoxFrame
+
+local minusBtn = Instance.new("TextButton")
+minusBtn.Size = UDim2.new(0.2, -2, 0.8, 0)
+minusBtn.Position = UDim2.new(0.6, 0, 0.1, 0)
+minusBtn.BackgroundColor3 = Color3.new(0.3, 0.3, 0.3)
+minusBtn.Text = "-"
+minusBtn.TextColor3 = Color3.new(1, 1, 1)
+minusBtn.Font = Enum.Font.GothamBold
+minusBtn.TextSize = 18
+minusBtn.Parent = distBoxFrame
+
+local plusBtn = Instance.new("TextButton")
+plusBtn.Size = UDim2.new(0.2, -2, 0.8, 0)
+plusBtn.Position = UDim2.new(0.8, 0, 0.1, 0)
+plusBtn.BackgroundColor3 = Color3.new(0.3, 0.3, 0.3)
+plusBtn.Text = "+"
+plusBtn.TextColor3 = Color3.new(1, 1, 1)
+plusBtn.Font = Enum.Font.GothamBold
+plusBtn.TextSize = 18
+plusBtn.Parent = distBoxFrame
+
+local function updateDistance(newDist)
+    newDist = math.clamp(newDist, 1, 100)
+    beneathDistance = newDist
+    distanceBox.Text = tostring(newDist)
+end
+
+distanceBox.FocusLost:Connect(function()
+    local val = tonumber(distanceBox.Text)
+    if val then
+        updateDistance(val)
+    else
+        distanceBox.Text = tostring(beneathDistance)
+    end
+end)
+
+minusBtn.MouseButton1Click:Connect(function()
+    updateDistance(beneathDistance - 1)
+end)
+
+plusBtn.MouseButton1Click:Connect(function()
+    updateDistance(beneathDistance + 1)
+end)
+
+-- Exceptions list
+local exceptionLabel = Instance.new("TextLabel")
+exceptionLabel.Size = UDim2.new(0.9, 0, 0, 20)
+exceptionLabel.BackgroundTransparency = 1
+exceptionLabel.Text = "Blacklist (exceptions)"
+exceptionLabel.TextColor3 = Color3.new(1, 1, 1)
+exceptionLabel.Font = Enum.Font.GothamBold
+exceptionLabel.TextSize = 16
+exceptionLabel.Parent = content
+
+blacklistContainer = Instance.new("ScrollingFrame")
+blacklistContainer.Size = UDim2.new(0.9, 0, 0, 120)
+blacklistContainer.BackgroundColor3 = Color3.new(0.15, 0.15, 0.15)
+blacklistContainer.BorderSizePixel = 0
+blacklistContainer.CanvasSize = UDim2.new(0, 0, 0, 0)
+blacklistContainer.ScrollBarThickness = 6
+blacklistContainer.AutomaticCanvasSize = Enum.AutomaticSize.Y
+blacklistContainer.Parent = content
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 2)
+listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = blacklistContainer
+
+-- Exception row
+local addFrame = Instance.new("Frame")
+addFrame.Size = UDim2.new(0.9, 0, 0, 30)
+addFrame.BackgroundTransparency = 1
+addFrame.Parent = content
+
+addBox = Instance.new("TextBox")
+addBox.Size = UDim2.new(0.7, 0, 1, 0)
+addBox.BackgroundColor3 = Color3.new(0.15, 0.15, 0.15)
+addBox.PlaceholderText = "Entity name"
+addBox.Text = ""
+addBox.TextColor3 = Color3.new(1, 1, 1)
+addBox.Font = Enum.Font.Gotham
+addBox.TextSize = 14
+addBox.ClearTextOnFocus = false
+addBox.Parent = addFrame
+
+addBtn = Instance.new("TextButton")
+addBtn.Size = UDim2.new(0.3, 0, 1, 0)
+addBtn.Position = UDim2.new(0.7, 0, 0, 0)
+addBtn.BackgroundColor3 = Color3.new(0.2, 0.6, 1)
+addBtn.Text = "Add"
+addBtn.TextColor3 = Color3.new(1, 1, 1)
+addBtn.Font = Enum.Font.GothamBold
+addBtn.TextSize = 14
+addBtn.Parent = addFrame
+
+addBtn.MouseButton1Click:Connect(function()
+    local name = addBox.Text:match("^%s*(.-)%s*$")
+    if name ~= "" and not blacklist[name] then
+        blacklist[name] = true
+        addBox.Text = ""
+        rebuildBlacklistDisplay()
+    end
+end)
+
+rebuildBlacklistDisplay()
+
+RunService.Heartbeat:Connect(function()
+    updatePosition()
+    updateCurrentEntityLabel()
+end)
+
+player.CharacterAdded:Connect(function(newCharacter)
+    character = newCharacter
+    humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+    if enabled then
+        toggle()  
+        enabled = false
+        updateToggleButton()
+        currentEntity = nil
+    end
+end)
+
+ENTITY_FOLDER.ChildAdded:Connect(function(newEntity)
+    if enabled and not currentEntity and isEntityAlive(newEntity) and not isBlacklisted(newEntity) then
+        switchToEntity(newEntity)
+        updateCurrentEntityLabel()
+    end
+end)
+
+_G.addEntityException = function(thing)
+    if typeof(thing) == "Instance" then
+        blacklist[thing] = true
+    elseif type(thing) == "string" then
+        blacklist[thing] = true
+    else
+        warn("addEntityException: expected string or Instance")
+    end
+    rebuildBlacklistDisplay()
+end
+
+updateCurrentEntityLabel()
